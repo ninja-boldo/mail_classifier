@@ -1,18 +1,88 @@
-from flask import Flask, request, jsonify
+import os
+from flask import Flask, abort, request, jsonify
 import requests
 import imaplib
 import logging
 import ai_client
+from dotenv import load_dotenv
+
+load_dotenv(".env")
+
+
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 classifier = ai_client.client()
 
 
+API_KEY = os.environ.get("API_KEY")  
+if API_KEY:
+    API_KEY = API_KEY.replace(" ", "")
+
+
+@app.before_request
+def require_api_key():
+    """
+    Middleware that requires X-API-Key header on every request.
+    Skips check if API_KEY is unset (e.g., local dev mode).
+    """
+    if not API_KEY:
+        # Local mode: warn once and skip check
+        if not hasattr(require_api_key, "_warned"):
+            logger.warning("⚠️  API_KEY not set – running in UNPROTECTED mode.")
+            require_api_key._warned = True
+        return  # allow everything in dev
+    header_key = request.headers.get("X-API-Key")
+    if header_key != API_KEY:
+        abort(401)
+        
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy"}), 200
+
+
+
+
+logger = logging.getLogger(__name__)
+
+def log_response(resp, context=""):
+    """
+    Safely logs the content of a response object.
+    
+    Args:
+        resp: The response object (e.g., requests.Response)
+        context: Optional string to add context about where this response came from
+    """
+    try:
+        if resp is None:
+            logger.warning(f"{context} Response is None.")
+            return
+
+        # Attempt to parse JSON
+        try:
+            data = resp.json()
+            if not data:
+                logger.warning(f"{context} Response JSON was empty, but got a response: {resp.text}")
+            else:
+                logger.info(f"{context} Got response JSON: {data}")
+        except ValueError as ve:
+            # JSON decoding failed
+            logger.warning(f"{context} Could not parse JSON: {ve}. Raw response text: {getattr(resp, 'text', '<no text>')}")
+        except Exception as e:
+            # Some other error accessing .json()
+            logger.exception(f"{context} Unexpected error parsing JSON: {e}")
+
+        # Optionally, log status code if available
+        status_code = getattr(resp, "status_code", None)
+        if status_code is not None:
+            logger.info(f"{context} Response status code: {status_code}")
+
+    except Exception as e:
+        # Catch anything unexpected to make this completely bulletproof
+        logger.exception(f"{context} Unexpected error while logging response: {e}")
+
+
 
 @app.route("/pipe_mail", methods=["POST"])
 def receive_mail():
@@ -72,8 +142,16 @@ def receive_mail():
             "source_folder": "INBOX",
             "target_folder": classified
         }
-        resp = requests.post(url="http://localhost:3030/move-email", json=json_input )
-        logger.info(f"got this response from move mail: {resp.json()}")
+        
+        # FIX: Add API key header when making internal request
+        headers = {"X-API-Key": API_KEY} if API_KEY else {}
+        resp = requests.post(
+            url="http://localhost:3030/move-email", 
+            json=json_input,
+            headers=headers
+        )
+        
+        log_response(resp=resp, context="move email function/endpoint got fetched")
         
         if resp.status_code in [200]:
             logger.info(f"succesfully moved mail {mail_uid} from inbox to {classified}")
@@ -83,8 +161,7 @@ def receive_mail():
         
     except Exception as e:
         logger.error(f"Error in receive_mail: {str(e)}", exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
-        
+        return jsonify({"success": False, "error": str(e)}), 500    
     
 
 
@@ -177,7 +254,7 @@ def move_email():
         try:
             create_result = mail.create(f'"{target_folder}"')
             logger.info(f"Created folder {target_folder}: {create_result}")
-        except:
+        except Exception:
             logger.info(f"Folder {target_folder} already exists or cannot be created (this is normal)")
         
         # Copy email to target folder
@@ -224,11 +301,13 @@ def move_email():
             }), 500
             
     except imaplib.IMAP4.error as e:
-        logger.error(f"IMAP error: {str(e)}")
+        # --- THIS IS THE MODIFIED LINE ---
+        logger.error(f"IMAP error: {str(e)}", exc_info=True)
+        # --- END OF MODIFICATION ---
         if mail:
             try:
                 mail.logout()
-            except:
+            except Exception:
                 pass
         logger.info(f"""about to return this: {{
             "success": False,
@@ -240,17 +319,19 @@ def move_email():
         }), 500
         
     except Exception as e:
+        # This block already had exc_info=True, so it's correct
         logger.error(f"Unexpected error: {str(e)}", exc_info=True)
         if mail:
             try:
                 mail.logout()
-            except:
+            except Exception:
                 pass
         return jsonify({
             "success": False,
             "error": f"Unexpected error: {str(e)}"
         }), 500
-
+        
+        
 
 @app.route('/list-folders', methods=['POST'])
 def list_folders():
@@ -324,7 +405,7 @@ def list_folders():
             if mail:
                 try:
                     mail.logout()
-                except:
+                except Exception:
                     pass
             return jsonify({
                 "success": False,
@@ -336,7 +417,7 @@ def list_folders():
         if mail:
             try:
                 mail.logout()
-            except:
+            except Exception:
                 pass
         return jsonify({
             "success": False,
