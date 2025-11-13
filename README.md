@@ -47,7 +47,7 @@ GROQ_API_KEY=your-groq-api-key-here
 ### 3. Run with Docker Compose
 
 ```bash
-docker-compose up -d
+docker-compose up --build -d
 ```
 
 The service will be available at `http://localhost:5000`
