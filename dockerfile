@@ -11,7 +11,6 @@ RUN uv pip install --no-cache-dir -r requirements.txt --system
 # Copy application code
 COPY server.py .
 COPY ai_client.py .
-COPY .env .
 
 # Expose port
 EXPOSE 5000
